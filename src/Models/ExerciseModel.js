@@ -5,7 +5,7 @@ const exerciseSchema = new mongoose.Schema(
     Exercise_Name: String,
     Type: String,
     Exercise_Type: String,
-    Session_Id: [Number],
+    Session_Id: Number,
   },
   { timestamps: true }
 );

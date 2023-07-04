@@ -48,38 +48,13 @@ const upload = multer({
 });
 
 //=================[Post Exercise]===================================//
-const excel = require("./src/excel-to-json.json");
+const excel = require("./src/Elevare-Exercises.json");
 const ExerciseModel = require("./src/Models/ExerciseModel");
 app.post("/StoreExcelData", async (req, res) => {
   try {
     const exercises = excel.Exercises;
-    console.log(exercises, "aaa");
 
-    for (const exercise of exercises) {
-      const sessionId = exercise["Session_Id"];
-      if (sessionId) {
-        const sessionIds = sessionId.split(",").map(Number);
-        exercise["Session_Id"] = sessionIds;
-      }
-
-      try {
-        const newExercise = new ExerciseModel({
-          Exercise_Name: exercise.Exercise_Name,
-          Type: exercise.Type,
-          Exercise_Type: exercise.Exercise_Type,
-          Session_Id: exercise["Session_Id"],
-        });
-
-        await newExercise.save();
-      } catch (error) {
-        console.error("Failed to save exercise:", error);
-        return res.status(500).send({
-          status: false,
-          message: "Failed to save exercises",
-          error: error.message,
-        });
-      }
-    }
+    await ExerciseModel.insertMany(exercises);
 
     return res.status(201).send({
       status: true,
@@ -93,6 +68,7 @@ app.post("/StoreExcelData", async (req, res) => {
     });
   }
 });
+
 //=======================[Get Exercise]=================
 app.get("/GetExercise", async (req, res) => {
   try {
@@ -108,7 +84,7 @@ app.get("/GetExercise", async (req, res) => {
       });
     } else {
       var exercises = await ExerciseModel.find();
-      return res.status(201).send({
+      return res.status(200).send({
         status: true,
         message: "Get Excel Data Successfully",
         data: exercises,
@@ -974,12 +950,22 @@ app.put(
 
       let { image, admin_name, email, contact, address } = data;
 
+      let user2 = await academy_coachModel.findById({ _id: userid });
+
+      if (user2.join_as == "Academy") {
+        var user = await academy_coachModel.findByIdAndUpdate(
+          { _id: userid },
+          { academy_name: data.admin_name },
+          { new: true }
+        );
+      }
+
       let academy = await academyProfile.findOneAndUpdate(
         { userId: userid },
         {
           $set: {
             image: data.image,
-            admin_name: data.admin_name,
+            admin_name: user.academy_name,
             email: data.email,
             contact: data.contact,
             address: data.address,

@@ -7,6 +7,7 @@ const otpModel = require("../Models/otpModel");
 const userModel = require("../Models/userModel");
 const testModel = require("../Models/Test_Model");
 const profileModel = require("../Models/profile");
+const EWMAModel = require("../Models/EWMA_Model");
 const wicketModel = require("../Models/wicketModel");
 const battingModel = require("../Models/battingModel");
 const bowlingModel = require("../Models/bowlingModel");
@@ -32,8 +33,9 @@ const academy_coachModel = require("../Models/academy_coachModel");
 const recommendationModel = require("../Models/recommendationModel");
 const scoreAndremarkModel = require("../Models/scoreAndremarkModel");
 const session_exerciseModel = require("../Models/session_exerciseModel");
+require("aws-sdk/lib/maintenance_mode_message").suppress = true;
 
-//==========================[user register]==============================
+//==========================[user register]=============================
 const createUser = async function (req, res) {
   try {
     let data = req.body;
@@ -749,6 +751,9 @@ const createRoutine = async function (req, res) {
       drills,
       date,
       time,
+      end_time,
+      duration,
+      // note,
       category,
       drill_id,
       repetation,
@@ -813,6 +818,9 @@ const createRoutine = async function (req, res) {
       drills,
       date,
       time,
+      end_time,
+      duration,
+      // note,
       category,
       drill_id,
       repetation,
@@ -862,6 +870,9 @@ const createRoutine = async function (req, res) {
               drills: CreateRoutine.drills,
               date: CreateRoutine.date,
               time: CreateRoutine.time,
+              end_time: CreateRoutine.end_time,
+              duration: CreateRoutine.duration,
+              // note: CreateRoutine.note,
               category: CreateRoutine.category,
               repetation: CreateRoutine.repetation,
               sets: CreateRoutine.sets,
@@ -1655,7 +1666,7 @@ const createPlayerRoutine = async function (req, res) {
     let userId = req.params.userId;
     const category = 0;
 
-    var { drills, date, time, end_date, drill_id } = data;
+    var { drills, date, time, end_time, duration, end_date, drill_id } = data;
     data.userId = userId;
     data.category = category;
 
@@ -1716,6 +1727,8 @@ const createPlayerRoutine = async function (req, res) {
       drills,
       date,
       time,
+      end_time,
+      duration,
       end_date,
       category,
       group,
@@ -1760,6 +1773,8 @@ const createPlayerRoutine = async function (req, res) {
               drills: playerRoutine.drills,
               date: playerRoutine.date,
               time: playerRoutine.time,
+              end_time: playerRoutine.end_time,
+              duration: playerRoutine.duration,
               category: playerRoutine.category,
               isCompleted: playerRoutine.isCompleted,
               end_date: playerRoutine.end_date,
@@ -2255,9 +2270,24 @@ const SnCPlayerLogin = async function (req, res) {
 const readinessSurvey = async function (req, res) {
   try {
     let data = req.body;
+    let { date, Sleep, Mood, Energy, Stressed, Sore, Heart_rate, Urine_color } =
+      data;
     let userId = req.params.userId;
 
     data.userId = userId;
+
+    let allReadiness = await readinessSurveyModel
+      .find({ userId: userId })
+      .lean();
+
+    for (let i = 0; i < allReadiness.length; i++) {
+      if (data.date === allReadiness[i].date) {
+        return res.status(400).send({
+          status: false,
+          message: "You already have a Readiness set for this time",
+        });
+      }
+    }
 
     const createReadinessSurvey = await readinessSurveyModel.create(data);
 
@@ -2359,16 +2389,77 @@ const createWorkout = async function (req, res) {
     let obj = {};
 
     obj["userId"] = Workout.userId;
+    obj["routineId"] = Workout.routineId;
     obj["date"] = Workout.date;
     obj["intensity"] = Workout.intensity;
     obj["total_time"] = Workout.total_time;
     obj["minutes_batted"] = Workout.minutes_batted;
     obj["balls_bowled"] = Workout.balls_bowled;
+    obj["distance_covered"] = Workout.distance_coverd;
+    obj["exercise_id"] = Workout.exercise_id;
+    obj["workload"] = Workout.workload;
+
+    let workout = await workoutModel.find({ userId: userId });
+
+    var getSessionExercise = [];
+
+    if (req.body.date) {
+      getSessionExercise = workout.filter(
+        (routine) => routine.date === req.body.date
+      );
+    } else {
+      getSessionExercise = workout;
+    }
+
+    let N = 1;
+    let lembda = 2 / (N + 1);
+    let yesterdayEWMA = 0;
+    let yesterdayWorkLoad = 0;
+
+    for (let i = 0; i < getSessionExercise.length; i++) {
+      let work_load = getSessionExercise[i].workload;
+      let ewma = work_load * lembda + (1 - lembda) * yesterdayEWMA;
+
+      yesterdayEWMA = ewma;
+      yesterdayWorkLoad += work_load;
+    }
+
+    let ewma;
+
+    if (req.body.date) {
+      let existingEwma = await EWMAModel.findOne({
+        userId: userId,
+        date: req.body.date,
+      });
+
+      if (existingEwma) {
+        ewma = yesterdayWorkLoad * lembda + (1 - lembda) * existingEwma.ewma;
+        existingEwma.ewma = ewma;
+        await existingEwma.save();
+      } else {
+        ewma = yesterdayWorkLoad * lembda + (1 - lembda) * yesterdayEWMA;
+        let ewmaEntry = new EWMAModel({
+          userId: userId,
+          date: Workout.date,
+          ewma: ewma,
+        });
+        await ewmaEntry.save();
+      }
+    } else {
+      ewma = yesterdayWorkLoad * lembda + (1 - lembda) * yesterdayEWMA;
+      let ewmaEntry = new EWMAModel({
+        userId: userId,
+        date: Workout.date,
+        ewma: ewma,
+      });
+      await ewmaEntry.save();
+    }
 
     return res.status(201).send({
       status: true,
       message: "Created successfully",
       data: obj,
+      ewma: ewma,
     });
   } catch (error) {
     return res.status(500).send({
@@ -2823,9 +2914,7 @@ const getMonthlyWiseTimeSpent = async function (req, res) {
     return res.status(200).send({
       status: true,
       message: "Get Month Wise Time Spent data",
-      data: {
-        weeklyData: response,
-      },
+      data: response,
     });
   } catch (error) {
     return res.status(500).send({
@@ -2848,8 +2937,8 @@ const getRecentAndLongTermAverage = async function (req, res) {
     let Readiness = await readinessSurveyModel
       .find({ userId: userId })
       .sort({ date: 1 });
-    let startDateString = req.query.weekstartdate;
-    let endDateString = req.query.weekend_date;
+    var startDateString = req.query.weekstartdate;
+    var endDateString = req.query.weekend_date;
     let [startDay, startMonth, startYear] = startDateString.split("-");
     let [endDay, endMonth, endYear] = endDateString.split("-");
 
@@ -2885,7 +2974,6 @@ const getRecentAndLongTermAverage = async function (req, res) {
         count++;
       }
     }
-
     let averageSleep = count > 0 ? (totalSleep / count).toFixed(2) : null;
     let averageMood = count > 0 ? (totalMood / count).toFixed(2) : null;
     let averageEnergy = count > 0 ? (totalEnergy / count).toFixed(2) : null;
@@ -2899,8 +2987,7 @@ const getRecentAndLongTermAverage = async function (req, res) {
       (parseFloat(averageStressed) || 0) +
       (parseFloat(averageSore) || 0);
 
-    let recentAverage =
-      dateArray.length > 0 ? (totalAvg / dateArray.length).toFixed(2) : null;
+    let recentAverage = (totalAvg / 5).toFixed(2);
 
     // =======================[Long-term Average]===================
 
@@ -2930,16 +3017,6 @@ const getRecentAndLongTermAverage = async function (req, res) {
       (endsDateObj - startsDateObj) / (7 * 24 * 60 * 60 * 1000)
     );
 
-    let weeklySleepTotal = 0;
-    let weeklySleepCount = 0;
-    let weeklyMoodTotal = 0;
-    let weeklyMoodCount = 0;
-    let weeklyEnergyTotal = 0;
-    let weeklyEnergyCount = 0;
-    let weeklyStressedTotal = 0;
-    let weeklyStressedCount = 0;
-    let weeklySoreTotal = 0;
-    let weeklySoreCount = 0;
     let totalWeeks = 0;
 
     let currentDate = new Date(startsDateObj);
@@ -2962,6 +3039,17 @@ const getRecentAndLongTermAverage = async function (req, res) {
       let averageEnergy = null;
       let averageStressed = null;
       let averageSore = null;
+
+      let weeklySleepTotal = 0;
+      let weeklySleepCount = 0;
+      let weeklyMoodTotal = 0;
+      let weeklyMoodCount = 0;
+      let weeklyEnergyTotal = 0;
+      let weeklyEnergyCount = 0;
+      let weeklyStressedTotal = 0;
+      let weeklyStressedCount = 0;
+      let weeklySoreTotal = 0;
+      let weeklySoreCount = 0;
 
       for (let j = startDate; j <= endDate; j.setDate(j.getDate() + 1)) {
         let currentDate = j
@@ -3067,35 +3155,49 @@ const getRecentAndLongTermAverage = async function (req, res) {
         week: i + 1,
       });
 
-      weeklySleepTotal = 0;
-      weeklySleepCount = 0;
-      weeklyMoodTotal = 0;
-      weeklyMoodCount = 0;
-      weeklyEnergyTotal = 0;
-      weeklyEnergyCount = 0;
-      weeklyStressedTotal = 0;
-      weeklyStressedCount = 0;
-      weeklySoreTotal = 0;
-      weeklySoreCount = 0;
-
       currentDate.setDate(currentDate.getDate() + 7);
     }
 
     if (totalWeeks > 0) {
-      longTermAverage = (
+      let monthlyTotalDays = totalWeeks * 7;
+      let monthlyAvg =
         (monthlyAverageSleep +
           monthlyAverageMood +
           monthlyAverageEnergy +
           monthlyAverageStressed +
           monthlyAverageSore) /
-        (totalWeeks * 5)
-      ).toFixed(2);
+        (monthlyTotalDays * 5);
+      longTermAverage = monthlyAvg.toFixed(2);
     }
 
+    let testDate = await readinessSurveyModel.findOne({
+      userId: userId,
+      date: endDateString,
+    });
+
+    var testDates;
+
+    if (testDate) {
+      var totalAverage =
+        (parseFloat(testDate.Sleep) || 0) +
+        (parseFloat(testDate.Mood) || 0) +
+        (parseFloat(testDate.Energy) || 0) +
+        (parseFloat(testDate.Stressed) || 0) +
+        (parseFloat(testDate.Sore) || 0);
+
+      testDates = totalAverage / 5;
+      testDates = testDates.toFixed(2);
+    } else {
+      testDates = 0;
+    }
     return res.status(200).send({
       status: true,
       message: "Success",
-      data: { recentAverage: recentAverage, longTermAverage: longTermAverage },
+      data: {
+        longTodaysAverage: testDates,
+        recentAverage: recentAverage,
+        longTermAverage: longTermAverage,
+      },
     });
   } catch (error) {
     return res.status(500).send({
@@ -3177,27 +3279,644 @@ const createSessionExercise = async function (req, res) {
   try {
     let userId = req.params.userId;
     let data = req.body;
+    let sessionExerciseArr = [];
 
-    let session_exerciseArr = [];
+    for (let j = 0; j < data.length; j++) {
+      let sessionExerciseData = data[j];
+      let { date, session_id, Exercise_id, Exercise_title, unit, exercises } =
+        sessionExerciseData;
 
-    for (let i = 0; i < data.length; i++) {
-      let { session_id, Exercise_id, Exercise_title, Set, Reps, Load_Unit } =
-        data[i];
-      data[i].userId = userId;
+      let exercisesArr = [];
+      let totalRepCount = 0;
 
-      let session_exercise = await session_exerciseModel.create(data[i]);
-      session_exerciseArr.push(session_exercise);
+      for (let i = 0; i < exercises.length; i++) {
+        let { Set, Reps, value } = exercises[i];
+        exercisesArr.push({ Set, Reps, value });
+        let repCount = Reps * value;
+        totalRepCount += repCount;
+      }
+
+      let work_load = totalRepCount;
+
+      let sessionExercise = await session_exerciseModel.create({
+        date,
+        session_id,
+        Exercise_id,
+        Exercise_title,
+        unit,
+        work_load,
+        exercises: exercisesArr,
+        userId,
+      });
+
+      sessionExerciseArr.push(sessionExercise);
     }
 
     return res.status(201).send({
       status: true,
       message: "Session Exercise Created Successfully",
-      data: session_exerciseArr,
+      data: sessionExerciseArr,
     });
   } catch (error) {
     return res.status(500).send({
       status: false,
       msg: error.message,
+    });
+  }
+};
+
+//=============[Get All Users]=============================
+const getUsersByCoachAcademy = async function (req, res) {
+  try {
+    let data = req.query;
+    let joinAsValues = [];
+
+    if (data.join_as) {
+      joinAsValues = data.join_as.split(", ");
+      joinAsValues = joinAsValues.map((value) => new RegExp(value, "i"));
+    }
+
+    let user = [];
+
+    if (joinAsValues.length === 0) {
+      user = await academy_coachModel.find();
+    } else {
+      user = await academy_coachModel.find({
+        join_as: { $in: joinAsValues },
+      });
+    }
+
+    return res.status(201).send({
+      status: true,
+      msg: "Get All Users",
+      data: user,
+    });
+  } catch (error) {
+    return res.status(500).send({
+      status: false,
+      msg: error.message,
+    });
+  }
+};
+
+//=================================[Get All Coach's Users]==============================
+let getAllUsersBySnc = async function (req, res) {
+  try {
+    let data = req.query;
+    let { id } = data;
+    let date = req.query.date;
+
+    let allUser = [];
+
+    let getUser = await userModel.find().lean();
+
+    if (getUser) {
+      allUser = await userModel
+        .find({
+          $or: [{ academy_id: id }, { snc_id: id }, { coach_id: id }],
+        })
+        .lean();
+
+      for (let i = 0; i < allUser.length; i++) {
+        let userProfile = await profileModel
+          .findOne({ userId: allUser[i]._id })
+          .select({ _id: 0, createdAt: 0, updatedAt: 0, __v: 0 });
+        allUser[i].userProfile = userProfile;
+        let Questions = await bow_batModel
+          .findOne({ userId: allUser[i]._id })
+          .select({ _id: 0, createdAt: 0, updatedAt: 0, __v: 0 });
+        allUser[i].userQuestion = Questions;
+        let getEwma = await EWMAModel.findOne({
+          userId: allUser[i]._id,
+          date: date,
+        }).select({ _id: 0, createdAt: 0, updatedAt: 0, __v: 0 });
+        allUser[i].EWMA = getEwma;
+      }
+    }
+
+    return res.status(200).send({
+      status: true,
+      msg: "Get All Users",
+      data: allUser,
+    });
+  } catch (error) {
+    return res.status(500).send({
+      status: false,
+      message: error.message,
+    });
+  }
+};
+
+//=========[Get Day Wise EWMA ]========
+const getDayWiseEWMA = async function (req, res) {
+  try {
+    let userId = req.params.userId;
+    let queryDate = req.query.date;
+
+    var routines = await EWMAModel.find({ userId: userId });
+
+    var getSessionExercise = [];
+
+    if (queryDate) {
+      getSessionExercise = routines.filter(
+        (routine) => routine.date === queryDate
+      );
+
+      if (getSessionExercise.length === 0) {
+        getSessionExercise = [
+          {
+            _id: routines[0]._id,
+            userId: userId,
+            date: queryDate,
+            ewma: 0,
+          },
+        ];
+      } else {
+        getSessionExercise = getSessionExercise.map((exercise) => {
+          return {
+            _id: exercise._id,
+            userId: exercise.userId,
+            date: exercise.date,
+            ewma: exercise.ewma,
+          };
+        });
+      }
+    }
+
+    if (getSessionExercise.length > 0) {
+      return res.status(200).send({
+        status: true,
+        msg: "Get Day Wise EWMA Successfully",
+        data: getSessionExercise,
+      });
+    } else {
+      return res.status(200).send({
+        status: true,
+        msg: "No EWMA data available for the given query date",
+        data: getSessionExercise,
+      });
+    }
+  } catch (error) {
+    return res.status(500).send({
+      status: false,
+      message: error.message,
+    });
+  }
+};
+
+//=========[Get Week and Month Wise EWMA]==========================
+const getWeekAndMonthWiseEwma = async function (req, res) {
+  try {
+    let userId = req.params.userId;
+
+    let routines = await EWMAModel.find({ userId: userId });
+
+    let startDateString = req.query.date;
+    let endDateString = req.query.end_date;
+    let [startDay, startMonth, startYear] = startDateString.split("-");
+    let [endDay, endMonth, endYear] = endDateString.split("-");
+
+    let startDateObj = new Date(`${startYear}`, startMonth - 1, startDay);
+    let endDateObj = new Date(`${endYear}`, endMonth - 1, endDay);
+
+    let dateArray = [];
+    for (
+      let date = startDateObj;
+      date <= endDateObj;
+      date.setDate(date.getDate() + 1)
+    ) {
+      let dateString = date
+        .toLocaleDateString("en-GB", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+        })
+        .split("/")
+        .join("-");
+      dateArray.push({ date: dateString });
+    }
+
+    let getSessionExercise = [];
+
+    for (let date of dateArray) {
+      let ewmaEntry = routines.find((routine) => routine.date === date.date);
+      let ewma = ewmaEntry ? ewmaEntry.ewma : 0;
+      getSessionExercise.push({ date: date.date, ewma: ewma });
+    }
+
+    let weekAverage = 0;
+    let weekSum = 0;
+    let count = 0;
+
+    let countDatesObj = getSessionExercise.length;
+
+    for (let i = 0; i < getSessionExercise.length; i++) {
+      let ewma = getSessionExercise[i].ewma;
+      weekSum += ewma;
+      count++;
+
+      if (count === countDatesObj) {
+        weekAverage = weekSum / countDatesObj;
+        break;
+      }
+    }
+
+    return res.status(200).send({
+      status: true,
+      msg: "Get EWMA Successfully",
+      data: getSessionExercise,
+      averageEwma: weekAverage,
+    });
+  } catch (error) {
+    return res.status(500).send({
+      status: false,
+      message: error.message,
+    });
+  }
+};
+
+//============[Get Week Wise EWMA for Workout Model]==========
+let getWeekWiseEwma = async function (req, res) {
+  try {
+    let userId = req.params.userId;
+    let queryDate = req.query.date;
+    let days = req.query.day;
+    var givenDateString = queryDate;
+    var givenDateParts = givenDateString.split("-");
+
+    var givenDate = new Date(
+      givenDateParts[2],
+      givenDateParts[1] - 1,
+      givenDateParts[0]
+    );
+
+    givenDate.setDate(givenDate.getDate() - 1);
+
+    var previousDay = givenDate.getDate();
+    var previousMonth = givenDate.getMonth() + 1;
+    var previousYear = givenDate.getFullYear();
+
+    var previousDateString =
+      (previousDay < 10 ? "0" + previousDay : previousDay) +
+      "-" +
+      (previousMonth < 10 ? "0" + previousMonth : previousMonth) +
+      "-" +
+      previousYear;
+
+    var Workload = await workoutModel.find({ userId: userId });
+
+    var getSessionExercise = [];
+
+    if (queryDate) {
+      getSessionExercise = Workload.filter(
+        (routine) => routine.date === queryDate
+      );
+    } else {
+      getSessionExercise = Workload;
+    }
+
+    let N = parseInt(days);
+    let lembda = 2 / (N + 1);
+
+    let yesterdayEWMA = 0;
+    let totalWorkload = 0;
+
+    let previousDate = null;
+    if (queryDate) {
+      let dates = Workload.map((routine) => routine.date);
+      let currentDateIndex = dates.indexOf(queryDate);
+      if (currentDateIndex > 0) {
+        previousDate = dates[currentDateIndex - 1];
+      }
+    }
+
+    for (let i = 0; i < getSessionExercise.length; i++) {
+      var work_load = getSessionExercise[i].workload;
+      totalWorkload += work_load;
+    }
+
+    let ewma = totalWorkload * lembda + (1 - lembda) * yesterdayEWMA;
+
+    if (previousDate) {
+      var existingEwma = await EWMAModel.findOne({
+        userId: userId,
+        date: previousDate,
+      });
+
+      if (existingEwma) {
+        ewma = totalWorkload * lembda + (1 - lembda) * existingEwma.ewma;
+        existingEwma.ewma = ewma;
+      }
+    }
+
+    let ewmas = 0;
+
+    for (let j = 0; j < Workload.length; j++) {
+      var testDate = Workload[j].date;
+    }
+
+    if (testDate !== queryDate) {
+      totalWorkload = 0;
+      var existingEwma = await EWMAModel.findOne({
+        userId: userId,
+        date: previousDateString,
+      });
+      if (existingEwma) {
+        ewma = totalWorkload * lembda + (1 - lembda) * existingEwma.ewma;
+        existingEwma.ewma = ewma;
+      }
+    }
+
+    if (ewma) {
+      return res.status(200).send({
+        status: true,
+        msg: "Get EWMA Successfully",
+        data: ewma,
+      });
+    } else {
+      return res.status(200).send({
+        status: true,
+        msg: "Get EWMA Successfully",
+        data: ewmas,
+      });
+    }
+  } catch (error) {
+    return res.status(500).send({
+      status: false,
+      message: error.message,
+    });
+  }
+};
+//==================[Update comment in Routines]================
+const updateComment = async function (req, res) {
+  try {
+    let userId = req.params.userId;
+    let data = req.body;
+
+    let { routineId, comment } = data;
+
+    let findComment = await routineModel.findOneAndUpdate(
+      { _id: routineId, userId: userId },
+      { $set: { comment: comment } },
+      { new: true }
+    );
+
+    return res.status(200).send({
+      status: true,
+      msg: "Update Comment Successfully",
+      data: findComment,
+    });
+  } catch (error) {
+    return res.status(500).send({
+      status: false,
+      message: error.message,
+    });
+  }
+};
+//================[Get Total Workload ]======================
+const getTotalWorkload = async function (req, res) {
+  try {
+    //     let userId = req.params.userId;
+    // let startDateString = req.query.date;
+    // let endDateString = req.query.end_date;
+    // let [startDay, startMonth, startYear] = startDateString.split("-");
+    // let [endDay, endMonth, endYear] = endDateString.split("-");
+
+    // let startDateObj = new Date(`${startYear}`, startMonth - 1, startDay);
+    // let endDateObj = new Date(`${endYear}`, endMonth - 1, endDay);
+
+    // let dateArray = [];
+    // for (let date = startDateObj; date <= endDateObj; date.setDate(date.getDate() + 1)) {
+    //   let dateString = date.toLocaleDateString("en-GB", {
+    //     day: "2-digit",
+    //     month: "2-digit",
+    //     year: "numeric",
+    //   }).split("/").join("-");
+    //   dateArray.push({ date: dateString });
+    // }
+
+    // var Workload = await workoutModel.find({ userId: userId });
+
+    // let weeklyWorkload = [];
+    // let weekStartIndex = 0;
+    // let weekEndIndex = 6; // Assuming a week has 7 days
+
+    // while (weekEndIndex < Workload.length) {
+    //   let weeklyData = Workload.slice(weekStartIndex, weekEndIndex + 1);
+    //   let totalWorkloadWeek = weeklyData.reduce((total, routine) => total + routine.workload, 0);
+    //   weeklyWorkload.push({
+    //     startDate: weeklyData[0].date,
+    //     endDate: weeklyData[weeklyData.length - 1].date,
+    //     totalWorkload: totalWorkloadWeek,
+    //   });
+    //   weekStartIndex += 7;
+    //   weekEndIndex += 7;
+    // }
+
+    // if (weekStartIndex < Workload.length) {
+    //   // If there are remaining days that form an incomplete week, consider them as a separate week
+    //   let remainingData = Workload.slice(weekStartIndex);
+    //   let totalWorkloadWeek = remainingData.reduce((total, routine) => total + routine.workload, 0);
+    //   weeklyWorkload.push({
+    //     startDate: remainingData[0].date,
+    //     endDate: remainingData[remainingData.length - 1].date,
+    //     totalWorkload: totalWorkloadWeek,
+    //   });
+    // }
+
+    // return res.status(200).send({
+    //   status: true,
+    //   msg: "Get weekly workload Successfully",
+    //   data: weeklyWorkload,
+    // });
+    //================================================================
+    // let userId = req.params.userId;
+    // let startDateString = req.query.date;
+    // let endDateString = req.query.end_date;
+    // let [startDay, startMonth, startYear] = startDateString.split("-");
+    // let [endDay, endMonth, endYear] = endDateString.split("-");
+
+    // let startDateObj = new Date(`${startYear}`, startMonth - 1, startDay);
+    // let endDateObj = new Date(`${endYear}`, endMonth - 1, endDay);
+
+    // let dateArray = [];
+    // for (
+    //   let date = startDateObj;
+    //   date <= endDateObj;
+    //   date.setDate(date.getDate() + 1)
+    // ) {
+    //   let dateString = date
+    //     .toLocaleDateString("en-GB", {
+    //       day: "2-digit",
+    //       month: "2-digit",
+    //       year: "numeric",
+    //     })
+    //     .split("/")
+    //     .join("-");
+    //   dateArray.push({ date: dateString });
+    // }
+
+    // var Workload = await workoutModel.find({ userId: userId });
+
+    // let weeklyWorkload = [];
+    // let weekStartIndex = 0;
+    // let weekEndIndex = 6;
+
+    // while (weekEndIndex < Workload.length) {
+    //   let weeklyData = Workload.slice(weekStartIndex, weekEndIndex + 1);
+    //   let totalWorkloadWeek = weeklyData.reduce(
+    //     (total, routine) => total + routine.workload,
+    //     0
+    //   );
+    //   weeklyWorkload.push({
+    //     startDate: weeklyData[0].date,
+    //     endDate: weeklyData[weeklyData.length - 1].date,
+    //     totalWorkload: totalWorkloadWeek,
+    //   });
+    //   weekStartIndex += 7;
+    //   weekEndIndex += 7;
+    // }
+
+    // if (weekStartIndex < Workload.length) {
+    //   let remainingData = Workload.slice(weekStartIndex);
+    //   let totalWorkloadWeek = remainingData.reduce(
+    //     (total, routine) => total + routine.workload,
+    //     0
+    //   );
+    //   weeklyWorkload.push({
+    //     startDate: remainingData[0].date,
+    //     endDate: remainingData[remainingData.length - 1].date,
+    //     totalWorkload: totalWorkloadWeek,
+    //   });
+    // }
+
+    // let fifthWeekIndex = 4;
+    // let previousFourWeeksTotal = weeklyWorkload
+    //   .slice(fifthWeekIndex - 4, fifthWeekIndex)
+    //   .reduce((total, week) => total + week.totalWorkload, 0);
+    // let fifthWeekTotal = weeklyWorkload[fifthWeekIndex].totalWorkload;
+
+    // let ratio = fifthWeekTotal / previousFourWeeksTotal;
+
+    // return res.status(200).send({
+    //   status: true,
+    //   msg: "Get weekly workload successfully",
+    //   data: {
+    //     averageWorkload: ratio.toFixed(3),
+    //   },
+    // });
+    //==================================================
+    let userId = req.params.userId;
+    let startDateString = req.query.date;
+    let endDateString = req.query.end_date;
+
+    let [startDay, startMonth, startYear] = startDateString.split("-");
+    let [endDay, endMonth, endYear] = endDateString.split("-");
+
+    let startDateObj = new Date(`${startYear}-${startMonth}-${startDay}`);
+    let endDateObj = new Date(`${endYear}-${endMonth}-${endDay}`);
+
+    let dateArray = [];
+    for (
+      let date = startDateObj;
+      date <= endDateObj;
+      date.setDate(date.getDate() + 1)
+    ) {
+      let dateString = date
+        .toLocaleDateString("en-GB", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+        })
+        .split("/")
+        .join("-");
+      dateArray.push({ date: dateString });
+    }
+
+    var Workload = await workoutModel.find({
+      userId: userId,
+      date: { $in: dateArray.map((d) => d.date) },
+    });
+
+    let weeklyWorkload = [];
+    let weekStartIndex = 0;
+    let weekEndIndex = 6;
+
+    while (weekEndIndex < Workload.length) {
+      let weeklyData = Workload.slice(weekStartIndex, weekEndIndex + 1);
+      let totalWorkloadWeek = weeklyData.reduce(
+        (total, routine) => total + routine.workload,
+        0
+      );
+      weeklyWorkload.push({
+        startDate: weeklyData[0].date,
+        endDate: weeklyData[weeklyData.length - 1].date,
+        totalWorkload: totalWorkloadWeek,
+      });
+      weekStartIndex += 7;
+      weekEndIndex += 7;
+    }
+
+    if (weekStartIndex < Workload.length) {
+      let remainingData = Workload.slice(weekStartIndex);
+      let totalWorkloadWeek = remainingData.reduce(
+        (total, routine) => total + routine.workload,
+        0
+      );
+      weeklyWorkload.push({
+        startDate: remainingData[0].date,
+        endDate: remainingData[remainingData.length - 1].date,
+        totalWorkload: totalWorkloadWeek,
+      });
+    }
+
+    let fifthWeekIndex = 4;
+    if (fifthWeekIndex < weeklyWorkload.length) {
+      let previousFourWeeksTotal = weeklyWorkload
+        .slice(fifthWeekIndex - 4, fifthWeekIndex)
+        .reduce((total, week) => total + week.totalWorkload, 0);
+      let fifthWeekTotal = weeklyWorkload[fifthWeekIndex].totalWorkload;
+
+      let ratio = (fifthWeekTotal / previousFourWeeksTotal).toFixed(3);
+
+      return res.status(200).send({
+        status: true,
+        msg: "Get Average workload successfully",
+        data: ratio,
+      });
+    } else {
+      return res.status(404).send({
+        status: false,
+        msg: "Not enough data to calculate the workload ratio for the 5th week.",
+        data: null,
+      });
+    }
+  } catch (error) {
+    return res.status(500).send({
+      status: false,
+      message: error.message,
+    });
+  }
+};
+//=============[Get Drill List For Routine Id]===========
+const getDrillList = async function (req, res) {
+  try {
+    let userId = req.params.userId;
+    let routineId = req.query.routine_id;
+
+    let getAllDrills = await myDrillModel.find({
+      userId: userId,
+      routine_id: routineId,
+    });
+    return res.status(200).send({
+      status: true,
+      msg: "Get All drills successfully",
+      data: getAllDrills,
+    });
+  } catch (error) {
+    return res.status(500).send({
+      status: false,
+      message: error.message,
     });
   }
 };
@@ -3271,4 +3990,12 @@ module.exports = {
   getsncCoach,
   UpdateSncidAcademyid,
   createSessionExercise,
+  getUsersByCoachAcademy,
+  getAllUsersBySnc,
+  getDayWiseEWMA,
+  getWeekAndMonthWiseEwma,
+  getWeekWiseEwma,
+  updateComment,
+  getTotalWorkload,
+  getDrillList,
 };

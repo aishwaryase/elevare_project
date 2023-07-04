@@ -26,6 +26,44 @@ Router.post("/createSnCPlayer", battingController.createSnCPlayer);
 Router.post("/SnCPlayerLogin", battingController.SnCPlayerLogin);
 Router.post("/snc/coach", battingController.createSncCoach);
 Router.get("/snc/getsnccoach", battingController.getsncCoach);
+Router.get("/getUsersByCoachAcademy", battingController.getUsersByCoachAcademy);
+Router.get("/getAllUsersBySnc", battingController.getAllUsersBySnc);
+Router.get(
+  "/:userId/getDrillList",
+  commnMid.jwtValidation,
+  commnMid.authorization,
+  battingController.getDrillList
+);
+Router.get(
+  "/:userId/getTotalWorkload",
+  commnMid.jwtValidation,
+  commnMid.authorization,
+  battingController.getTotalWorkload
+);
+Router.put(
+  "/:userId/updateComment",
+  commnMid.jwtValidation,
+  commnMid.authorization,
+  battingController.updateComment
+);
+Router.get(
+  "/:userId/getWeekWiseEwma",
+  commnMid.jwtValidation,
+  commnMid.authorization,
+  battingController.getWeekWiseEwma
+);
+Router.get(
+  "/:userId/getWeekAndMonthWiseEwma",
+  commnMid.jwtValidation,
+  commnMid.authorization,
+  battingController.getWeekAndMonthWiseEwma
+);
+Router.get(
+  "/:userId/getDayWiseEWMA",
+  commnMid.jwtValidation,
+  commnMid.authorization,
+  battingController.getDayWiseEWMA
+);
 Router.post(
   "/:userId/createSessionExercise",
   commnMid.jwtValidation,
